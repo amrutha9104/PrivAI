@@ -1,0 +1,16 @@
+torch
+torchvision 
+torchaudio 
+ultralytics 
+opencv-python 
+onnxruntime-gpu
+onnx 
+pydantic 
+fastapi 
+uvicorn
+numpy 
+scipy 
+pillow
+weaviate-client 
+librosa 
+soundfile
