@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PrivAI - Secure Video</title>
+    <link rel="stylesheet" href="static/css/styles.css">
+</head>
+<body>
+    <header><h1>PrivAI - AI-Powered Privacy for WebRTC</h1></header>
+    <main id="container">
+        <section id="video-container">
+            <div id="video-wrapper" style="text-align:center;padding:50px;">
+                <h3>Click "Join Room" to start video with AI processing</h3>
+                <p style="color:#666;">Camera access required</p>
+            </div>
+        </section>
+        <aside id="controls">
+            <h3>Privacy Controls</h3>
+            <div class="control-group">
+                <label>User ID: <input type="text" id="userId" placeholder="Enter ID"></label>
+            </div>
+            <div class="control-group">
+                <h4>Video Privacy</h4>
+                <label><input type="checkbox" id="blurFaces" checked> Blur Unknown Faces</label>
+                <label><input type="checkbox" id="blurObjects" checked> Blur Sensitive Objects</label>
+                <label>Background Mode:
+                    <select id="bgMode">
+                        <option value="blur">Blur</option>
+                        <option value="pixelate">Pixelate</option>
+                        <option value="replace">Replace</option>
+                        <option value="none">No Filter</option>
+                    </select>
+                </label>
+            </div>
+            <div class="control-group">
+                <h4>Registration</h4>
+                <label>Face Image: <input type="file" id="faceImage" accept="image/*"></label>
+                <label>Voice Sample: <input type="file" id="audioSample" accept="audio/*"></label>
+                <button onclick="registerUser()">Register User</button>
+            </div>
+            <div class="control-group">
+                <h4>Call Controls</h4>
+                <button onclick="joinRoom()">Start Video Call</button>
+            </div>
+            <div id="status"></div>
+        </aside>
+    </main>
+    <script src="static/js/main.js"></script>
+</body>
+</html>
