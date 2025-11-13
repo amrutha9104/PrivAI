@@ -1,0 +1,29 @@
+body {
+  text-align: center;
+  font-family: sans-serif;
+  background: #fafafa;
+  margin-top: 30px;
+}
+
+.videos {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+}
+
+video {
+  width: 45%;
+  border-radius: 10px;
+  background: black;
+}
+
+button {
+  margin-top: 20px;
+  padding: 10px 20px;
+  font-size: 16px;
+  border: none;
+  border-radius: 6px;
+  background-color: #4CAF50;
+  color: white;
+  cursor: pointer;
+}
