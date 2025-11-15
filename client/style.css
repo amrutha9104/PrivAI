@@ -1,0 +1,110 @@
+/* Reset basic margins and ensure full viewport height */
+body {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start; /* Align content to the top */
+    min-height: 100vh;
+    margin: 0;
+    padding: 20px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #121212; /* Deep dark background */
+    color: #E0E0E0; /* Light gray text */
+}
+
+.app-container {
+    width: 100%;
+    max-width: 1200px; /* Max width for a clean look */
+    padding: 30px;
+    background: #1e1e1e; /* Slightly lighter inner background */
+    border-radius: 15px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+}
+
+/* --- Header Styling --- */
+.header {
+    text-align: center;
+    margin-bottom: 30px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #333;
+}
+
+.header h1 {
+    color: #4CAF50; /* Highlight color */
+    font-weight: 700;
+    margin-bottom: 5px;
+}
+
+.header p {
+    color: #999;
+    font-size: 0.9em;
+}
+
+/* --- Video Grid Styling --- */
+.video-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr; /* Two equal columns */
+    gap: 25px;
+    margin-bottom: 25px;
+}
+
+.video-container {
+    position: relative;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+}
+
+.video-feed {
+    width: 100%;
+    /* Ensure the video scales nicely within the container */
+    aspect-ratio: 16 / 9; 
+    display: block;
+    object-fit: cover;
+}
+
+.video-label {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    padding: 5px 10px;
+    font-size: 0.8em;
+    border-top-right-radius: 10px;
+}
+
+/* --- Controls Styling --- */
+.controls-panel {
+    text-align: center;
+    padding: 20px 0 10px;
+}
+
+.call-button {
+    padding: 14px 30px;
+    font-size: 1.1em;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    background-color: #4CAF50; /* Primary success color */
+    color: #fff;
+    cursor: pointer;
+    transition: background-color 0.3s ease, transform 0.1s ease;
+    box-shadow: 0 4px #388E3C; /* 3D effect */
+}
+
+.call-button:hover {
+    background-color: #5cb85c;
+}
+
+.call-button:active {
+    background-color: #388E3C;
+    transform: translateY(3px);
+    box-shadow: 0 1px #388E3C;
+}
+
+.status-message {
+    margin-top: 15px;
+    color: #999;
+    font-style: italic;
+}

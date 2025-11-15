@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PrivAI: Secure Video Call</title>
+    
+    <link rel="stylesheet" href="style.css"> 
+</head>
+<body>
+    
+    <div class="app-container">
+        
+        <header class="header">
+            <h1>PrivAI Secure Session</h1>
+            <p>Adaptive Privacy Filter Active</p>
+        </header>
+
+        <div class="video-grid">
+            
+            <div class="video-container local-video-container">
+                <video id="localVideo" class="video-feed" autoplay playsinline muted></video>
+                <div class="video-label">You (Filtered)</div>
+            </div>
+            
+            <div class="video-container remote-video-container">
+                <video id="remoteVideo" class="video-feed" autoplay playsinline></video>
+                <div class="video-label">Remote User</div>
+            </div>
+        </div>
+
+        <div class="controls-panel">
+            <button id="startCall" class="call-button">Start Secure Call 📞</button>
+            <div id="statusMessage" class="status-message">Awaiting connection...</div>
+        </div>
+
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    
+    <script src="script.js"></script>
+</body>
+</html>
