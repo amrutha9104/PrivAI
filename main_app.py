@@ -3,82 +3,101 @@
 import threading
 import time
 import cv2
-import video_filter 
-import audio_filter 
-import shared_state 
+import video_filter
+import audio_filter
+import shared_state
 import sys
+import socketio
 
-# Import specific functions for thread communication
-from video_filter import run_video_loop 
+# Import thread functions
+from video_filter import run_video_loop
 from audio_filter import run_audio_distortion, set_audio_mute, get_audio_mute_state, set_background_mute_factor, get_background_mute_factor
-from shared_state import DETECTION_STATE 
+from shared_state import DETECTION_STATE
 
-# Global event used to signal threads to stop execution cleanly
+# Global stop event
 STOP_EVENT = threading.Event()
 
-# State variable for the main app to track manual overrides
-is_muted_override = False 
+# State variables
+is_muted_override = False
 is_distortion_override = False
 
-# Debounce timer for smooth control changes
+# Debounce timer
 LAST_DETECTION_TIME = 0.0
-SENSITIVE_HOLD_TIME = 1.0 
+SENSITIVE_HOLD_TIME = 1.0
+
+# Socket.IO client for receiving user choices
+sio = socketio.Client()
+
+@sio.event
+def connect():
+    print("✅ Main app connected to signaling server")
+
+@sio.event
+def disconnect():
+    print("⚠️  Main app disconnected from signaling server")
+
+@sio.on('detection-choice')
+def handle_detection_choice(data):
+    """
+    Receive user choice.
+    CRITICAL FIX: Apply choice to the CLASS, not just the ID.
+    """
+    object_id = data.get('objectId')
+    choice = data.get('choice')   # 'blur' or 'retain'
+    class_name = data.get('className')
+    
+    print(f"📩 RECEIVED CHOICE: {choice.upper()} for {class_name} (ID: {object_id})")
+    
+    # 1. Save this rule forever for this class
+    DETECTION_STATE.set_class_preference(class_name, choice)
+
+def connect_to_server():
+    while not STOP_EVENT.is_set():
+        try:
+            if not sio.connected:
+                sio.connect('http://localhost:3000')
+            time.sleep(5)
+        except Exception as e:
+            print(f"⚠️  Failed to connect to server: {e}")
+            time.sleep(5)
 
 def adaptive_control_loop(stop_event: threading.Event):
-    """
-    Runs in a dedicated thread to monitor video detection status and adjust audio filters.
-    """
-    global is_distortion_override
+    """Monitor detection status and adjust audio filters"""
     global LAST_DETECTION_TIME
     
-    NORMAL_MUTE = 1.0 
-    HIGH_MUTE = 3.0 
+    NORMAL_MUTE = 1.0
+    HIGH_MUTE = 3.0
     
     print("\n--- Adaptive Control Loop Running ---")
     
     while not stop_event.is_set():
-        # 1. Get Video Detection Status
         sensitive_detected = DETECTION_STATE.get_sensitive_status()
         
-        # 2. Update Detection Timer
         if sensitive_detected:
             LAST_DETECTION_TIME = time.time()
         
-        # 3. Adaptive Logic: Adjust Muting based on detection and debounce
         if not is_distortion_override:
-            
             if sensitive_detected or (time.time() - LAST_DETECTION_TIME < SENSITIVE_HOLD_TIME):
-                # Apply high mute factor if detected OR within the hold time
                 if get_background_mute_factor() != HIGH_MUTE:
                     set_background_mute_factor(HIGH_MUTE)
-                    print("CONTROL: Applying HIGH Mute (Sensitive Content Detected / Hold Active)")
             else:
-                # Return to normal only if clear AND hold time has expired
                 if get_background_mute_factor() != NORMAL_MUTE:
                     set_background_mute_factor(NORMAL_MUTE)
-                    print("CONTROL: Returning to NORMAL Mute (Content Clear)")
         
-        time.sleep(0.1) 
+        time.sleep(0.1)
 
 def manual_control_loop(stop_event: threading.Event):
-    """
-    Handles manual mute/distortion overrides via terminal.
-    """
-    global is_muted_override
-    global is_distortion_override
+    """Handle manual controls via terminal"""
+    global is_muted_override, is_distortion_override
     
-    print("\nManual Controls: 'm' to Toggle Mute, 'd' to Toggle Background Muting")
+    print("\nManual Controls: 'm' = Toggle Mute | 'd' = Toggle Distortion")
     
-    # Use sys.stdin.fileno() to check for input availability without blocking entirely
-    if sys.stdin.isatty():
-        print("Listening for manual input...")
-    else:
-        print("Manual controls disabled (not running in interactive terminal).")
+    if not sys.stdin.isatty():
+        print("Manual controls disabled (non-interactive terminal).")
         return
 
     while not stop_event.is_set():
         try:
-            # Note: This is simplified blocking input, intended for debugging/testing
             user_input = input().strip().lower()
             
             if user_input == 'm':
@@ -88,53 +107,52 @@ def manual_control_loop(stop_event: threading.Event):
                 
             elif user_input == 'd':
                 is_distortion_override = not is_distortion_override
-                
-                if is_distortion_override:
-                    set_background_mute_factor(3.0) 
-                    print("CONTROL: Manual Mute Override ON (Factor 3.0)")
-                else:
-                    set_background_mute_factor(1.0)
-                    print("CONTROL: Manual Mute Override OFF. Adaptive control resumed.")
+                factor = 3.0 if is_distortion_override else 1.0
+                set_background_mute_factor(factor)
+                print(f"CONTROL: Manual Override {'ON' if is_distortion_override else 'OFF'}")
             
-        except EOFError:
+        except:
             pass
-        except KeyboardInterrupt:
-            stop_event.set()
         
         time.sleep(0.1)
 
-
 def main():
+    # Connect to Socket.IO server for receiving choices
+    server_thread = threading.Thread(target=connect_to_server, daemon=True)
+    server_thread.start()
     
+    # Create processing threads
     video_thread = threading.Thread(target=run_video_loop, args=(STOP_EVENT,), daemon=True)
     audio_thread = threading.Thread(target=run_audio_distortion, args=(STOP_EVENT,), daemon=True)
     control_thread = threading.Thread(target=adaptive_control_loop, args=(STOP_EVENT,), daemon=True)
     manual_thread = threading.Thread(target=manual_control_loop, args=(STOP_EVENT,), daemon=True)
 
-    print("--- Adaptive Privacy Filter Initialized ---")
+    print("--- PrivAI Platform Initialized ---")
+    print("Initializing filters...")
     
     video_thread.start()
     audio_thread.start()
     control_thread.start()
     manual_thread.start()
 
-    print("Waiting for virtual camera to stabilize (5 seconds)...")
-    time.sleep(5) # <-- Added startup delay for driver stabilization
+    print("Waiting for virtual camera to stabilize (5s)...")
+    time.sleep(5)
     
-    # Wait for the stop event to be set
     try:
         while not STOP_EVENT.is_set():
-            time.sleep(1) 
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("\nKeyboard Interrupt detected. Signaling threads to stop...")
+        print("\n🛑 Shutting down...")
         STOP_EVENT.set()
 
-    # Wait for all threads to finish (with timeout for stuck I/O threads)
-    print("Waiting for final thread cleanup (Max 1 second timeout per thread)...")
-    video_thread.join(timeout=1)
-    audio_thread.join(timeout=1)
+    print("\nWaiting for threads to cleanup...")
+    video_thread.join(timeout=2)
+    audio_thread.join(timeout=2)
     control_thread.join(timeout=1)
     manual_thread.join(timeout=1)
+    
+    if sio.connected:
+        sio.disconnect()
     
     print("--- Application Shut Down Successfully ---")
 

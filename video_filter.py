@@ -2,198 +2,172 @@
 import cv2
 import numpy as np
 from ultralytics import YOLO
-import torch
 import threading
-import time 
-import os # Added for path/OS checks
-import pyvirtualcam # <--- NEW: For sending output to a virtual webcam
-# video_filter.py (Replace the old line with these two lines)
-
+import time
+import pyvirtualcam
 from pyvirtualcam import PixelFormat
-from webcam_stream import WebcamStream 
-from shared_state import DETECTION_STATE 
+from webcam_stream import WebcamStream
+from shared_state import DETECTION_STATE
+import socketio
+import warnings
 
-# --- Configuration ---
+warnings.filterwarnings("ignore")
+
 MODEL_PATH = 'yolov8n-seg.pt'
 try:
-    # Load the model outside the loop
-    model = YOLO(MODEL_PATH).to('cuda') 
-    print("YOLOv8 model loaded to CUDA (GPU).")
+    model = YOLO(MODEL_PATH).to('cuda')
+    print("✅ YOLOv8 (Seg) loaded to CUDA (GPU).")
 except:
     model = YOLO(MODEL_PATH)
-    print("YOLOv8 model loaded to CPU.")
+    print("⚠️ YOLOv8 (Seg) loaded to CPU.")
 
-INPAINT_RADIUS = 5 
-SENSITIVE_CLASS_IDS = [   # ID for 'person' (used for background blurring)
-    67,   # cell phone
-    64,   # laptop
-    66,   # keyboard
-    74,   # book
-    39,   # bottle
-    65,   # remote
-    63    # mouse
-] 
+CLASSES = model.names
+sio = socketio.Client()
 
-# Foreground Subject Exclusion Constant
-MAX_MAIN_SUBJECT_AREA_RATIO = 0.50 # Assume person taking >50% of screen is the main subject
+def connect_socket():
+    try:
+        sio.connect('http://localhost:3000')
+        print("✅ Video Filter connected to Signaling Server")
+    except Exception as e:
+        print(f"⚠️  Socket Error: {e}")
 
-# Tuning Parameters
-CONFIDENCE_THRESHOLD = 0.40 
-IOU_THRESHOLD = 0.70          
+def calculate_iou(box1, box2):
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - intersection
+    return intersection / union if union > 0 else 0
+
+def find_main_person(boxes, class_ids):
+    max_area = 0
+    main_idx = -1
+    for i, cls_id in enumerate(class_ids):
+        if cls_id == 0: # Person
+            x1, y1, x2, y2 = boxes[i]
+            area = (x2 - x1) * (y2 - y1)
+            if area > max_area:
+                max_area = area
+                main_idx = i
+    return main_idx
 
 def process_frame_segmentation(frame):
-    # Get frame dimensions for area calculation
     H, W, _ = frame.shape
-    FRAME_AREA = H * W
-    
-    results = model(
-        frame, 
-        conf=CONFIDENCE_THRESHOLD, 
-        iou=IOU_THRESHOLD,          
-        stream=False, 
-        verbose=False
-    )
+    results = model(frame, verbose=False, stream=False, retina_masks=True)
     result = results[0]
+    
+    # 1. Base: Full Black Mask (Everything Blurred)
+    visibility_mask = np.zeros((H, W), dtype=np.uint8) 
 
-    if result.masks is None or len(result.masks) == 0:
-        DETECTION_STATE.set_sensitive_status(False)
-        return frame 
-
-    class_ids = result.boxes.cls.cpu().numpy().astype(int)
-    all_masks_data = result.masks.data
-    boxes = result.boxes.xyxy.cpu().numpy().astype(int)
-    
-    sensitive_indices = []
-    max_person_area = 0
-    main_subject_index = -1
-    
-    # 1. First Pass: Find the largest 'person' and track its index
-    for i, (box, class_id) in enumerate(zip(boxes, class_ids)):
-        if class_id == 0: # Is a 'person'
-            x1, y1, x2, y2 = box
-            area = (x2 - x1) * (y2 - y1)
-            if area > max_person_area:
-                max_person_area = area
-                main_subject_index = i
-
-    # Determine if the largest person is considered the main subject
-    is_main_subject_too_large = (max_person_area / FRAME_AREA) > MAX_MAIN_SUBJECT_AREA_RATIO
-    
-    # 2. Second Pass: Determine which objects to blur (excluding the foreground person)
-    sensitive_found = False
-    
-    for i, class_id in enumerate(class_ids):
-        # Always include non-person sensitive items
-        if class_id != 0 and class_id in SENSITIVE_CLASS_IDS:
-            sensitive_indices.append(i)
-            sensitive_found = True
+    if result.masks is None:
+        pass 
+    else:
+        masks = result.masks.data.cpu().numpy()
+        boxes = result.boxes.xyxy.cpu().numpy()
+        class_ids = result.boxes.cls.cpu().numpy().astype(int)
         
-        # Include 'person' ONLY if they are NOT the large, central subject
-        elif class_id == 0 and class_id in SENSITIVE_CLASS_IDS:
-            # Blur if they are NOT the largest person
-            if i != main_subject_index:
-                sensitive_indices.append(i)
-                sensitive_found = True
-            # Blur the largest person only if they are very far away (area is small)
-            elif not is_main_subject_too_large and main_subject_index == i:
-                sensitive_indices.append(i)
-                sensitive_found = True
+        if masks.shape[1:] != (H, W):
+             masks_resized = []
+             for m in masks:
+                 masks_resized.append(cv2.resize(m, (W, H), interpolation=cv2.INTER_LINEAR))
+             masks = np.array(masks_resized)
 
-    # --- Remainder of the code ---
+        main_person_idx = find_main_person(boxes, class_ids)
+        tracked_objs = DETECTION_STATE.get_all_tracked_objects()
+        
+        for i, (mask, box, cls_id) in enumerate(zip(masks, boxes, class_ids)):
+            binary_mask = (mask * 255).astype(np.uint8)
+            class_name = CLASSES[cls_id]
+            
+            # --- Case A: Main User (Always Visible) ---
+            if i == main_person_idx:
+                visibility_mask = cv2.bitwise_or(visibility_mask, binary_mask)
+                continue
+
+            # --- Case B: Other Objects ---
+            # 1. Try to match with existing tracked object
+            matched_id = None
+            for obj_id, data in tracked_objs.items():
+                if data['class'] == class_name and calculate_iou(box, data['bbox']) > 0.4:
+                    matched_id = obj_id
+                    break
+            
+            current_choice = "blur" # Default
+
+            if matched_id is None:
+                # NEW OBJECT FOUND
+                new_id = DETECTION_STATE.get_next_id()
+                
+                # Register it. This checks if we have a saved preference!
+                # If we saved "retain" for "bottle", current_choice becomes "retain" automatically.
+                current_choice = DETECTION_STATE.register_object(new_id, class_name, box)
+                matched_id = new_id
+
+                # ONLY Popup if we don't have a preference yet
+                existing_pref = DETECTION_STATE.get_class_preference(class_name)
+                
+                if existing_pref is None and sio.connected:
+                    # We have no rule for this object class yet. Ask the user.
+                    print(f"🚨 Unknown Object: {class_name}. Asking User...")
+                    sio.emit('new-detection', {
+                        'objectId': new_id,
+                        'className': class_name
+                    })
+            else:
+                # EXISTING OBJECT
+                DETECTION_STATE.update_object_position(matched_id, box)
+                # Check preference again (in case user just clicked a button)
+                pref = DETECTION_STATE.get_class_preference(class_name)
+                if pref:
+                    current_choice = pref
+                else:
+                    current_choice = DETECTION_STATE.get_object_choice(matched_id)
+
+            # 2. Apply the Choice
+            if current_choice == 'retain':
+                # "Reveal" -> Add to visibility mask (White)
+                visibility_mask = cv2.bitwise_or(visibility_mask, binary_mask)
+            else:
+                # "Blur" -> Do nothing (Mask stays black at this spot)
+                pass
+
+    DETECTION_STATE.cleanup_stale_objects()
+
+    # Composite
+    blurred_frame = cv2.GaussianBlur(frame, (55, 55), 0)
+    visibility_mask_3ch = cv2.cvtColor(visibility_mask, cv2.COLOR_GRAY2BGR)
+    output = np.where(visibility_mask_3ch > 0, frame, blurred_frame)
     
-    if not sensitive_indices:
-        DETECTION_STATE.set_sensitive_status(False)
-        return frame 
-    
-    DETECTION_STATE.set_sensitive_status(True)
-
-    # 3. Precise Mask Generation and Anonymization
-    sensitive_masks_tensor = all_masks_data[sensitive_indices]
-    combined_mask_tensor = torch.any(sensitive_masks_tensor, dim=0).int() * 255
-    mask = combined_mask_tensor.cpu().numpy().astype(np.uint8)
-
-    inpainted_frame = cv2.inpaint(
-        src=frame, 
-        inpaintMask=mask, 
-        inpaintRadius=INPAINT_RADIUS, 
-        flags=cv2.INPAINT_NS
-    )
-
-    # 4. Apply Blur and Blend (Anonymization effect)
-    blurred_inpainted_area = cv2.GaussianBlur(inpainted_frame, (35, 35), 0) 
-    final_frame = np.where(mask[:, :, None] == 255, blurred_inpainted_area, inpainted_frame)
-
-    return final_frame
-
+    return output
 
 def run_video_loop(stop_event: threading.Event):
-    """
-    Main loop using the multi-threaded webcam reader and sending output to a 
-    virtual camera device using pyvirtualcam.
-    """
-    streamer = WebcamStream(src=0).start() 
-    if streamer.stopped:
-        stop_event.set()
-        return
-
-    # Get video dimensions and FPS from the capture object
-    W = int(streamer.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H = int(streamer.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    FPS = streamer.stream.get(cv2.CAP_PROP_FPS) or 30 # Default to 30 FPS if unavailable
-
-    frame_count = 0
-    start_time = time.time()
-
-    # --- CRITICAL CHANGE: Initialize Virtual Camera ---
+    connect_socket()
+    streamer = WebcamStream(src=0).start()
+    
+    W, H = 1280, 720
     try:
-        # pyvirtualcam expects RGB, while OpenCV outputs BGR. 
-        # We will use cv2.COLOR_BGR2RGB for conversion before sending.
-        with pyvirtualcam.Camera(width=W, height=H, fps=FPS, fmt=pyvirtualcam.PixelFormat.RGB) as cam:
-            print(f"Video Output: Sending stream to virtual camera device '{cam.device}' at {FPS:.1f} FPS")
+        cameras = pyvirtualcam.Camera.enumerate_devices()
+        cam_name = cameras[0].name if cameras else "OBS Virtual Camera"
+    except:
+        cam_name = "OBS Virtual Camera"
+        
+    print(f"📹 Streaming on {cam_name}")
+    
+    with pyvirtualcam.Camera(width=W, height=H, fps=30, device=cam_name, fmt=PixelFormat.RGB) as cam:
+        while not stop_event.is_set():
+            frame = streamer.read()
+            if frame is None: continue
+            frame = cv2.resize(frame, (W, H))
+            processed_frame = process_frame_segmentation(frame)
+            cam.send(cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB))
+            cam.sleep_until_next_frame()
             
-            while not stop_event.is_set():
-                if streamer.stopped:
-                    break
-                    
-                frame = streamer.read()
-                
-                if frame is None:
-                    time.sleep(0.01)
-                    continue
-                    
-                # --- Processing ---
-                filtered_frame = process_frame_segmentation(frame)
-                
-                # Convert BGR (OpenCV) to RGB (pyvirtualcam standard)
-                rgb_frame = cv2.cvtColor(filtered_frame, cv2.COLOR_BGR2RGB)
+            cv2.imshow("Admin View (Q to quit)", processed_frame)
+            if cv2.waitKey(1) == ord('q'):
+                stop_event.set()
 
-                # --- Send to Virtual Camera ---
-                cam.send(rgb_frame)
-                
-                # --- Display (For local debugging/feedback) ---
-                cv2.imshow('Debug Filtered Output | Press Q to Quit', filtered_frame) 
-                
-                # Tell the virtual camera to wait for the next frame time
-                cam.sleep_until_next_frame() 
-                
-                # --- FPS Calculation and Exit Check ---
-                frame_count += 1
-                elapsed_time = time.time() - start_time
-                if elapsed_time > 1: 
-                    fps = frame_count / elapsed_time
-                    start_time = time.time()
-                    frame_count = 0
-                    print(f"Video FPS: {fps:.2f} | Sensitive: {DETECTION_STATE.get_sensitive_status()}")
-
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    stop_event.set()
-                    break
-
-    except Exception as e:
-        print(f"Virtual Cam Error or Video Filter UNEXPECTED Error: {e}")
-        stop_event.set()
-    finally:
-        # Cleanup
-        streamer.stop()
-        cv2.destroyAllWindows()
-        print("Video Filter Thread Terminated.")
+    streamer.stop()
+    cv2.destroyAllWindows()
