@@ -1,6 +1,6 @@
 const socket = io("http://localhost:3000");
 
-// Identify as web client
+// Identify this client as the Web Interface
 socket.emit('client-type', 'web');
 
 // --- DOM Elements ---
@@ -8,162 +8,219 @@ const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
 const startCallBtn = document.getElementById('startCall');
 const statusMessage = document.getElementById('statusMessage');
-const detectionPopup = document.getElementById('detectionPopup');
 const cameraSelect = document.getElementById('cameraSelect');
+const toggleMicBtn = document.getElementById('toggleMicBtn');
+const toggleCamBtn = document.getElementById('toggleCamBtn');
+
+// Create Toast Container if it doesn't exist (Fail-safe)
+let toastContainer = document.getElementById('toast-container');
+if (!toastContainer) {
+    toastContainer = document.createElement('div');
+    toastContainer.id = 'toast-container';
+    toastContainer.className = 'toast-container';
+    document.body.appendChild(toastContainer);
+}
 
 // --- State Variables ---
 let localStream;
 let peer;
+let isMicOn = true;
+let isCamOn = true;
+const activeAlerts = new Set(); // Prevents spamming the same alert
 
 // =================================================================
-// 1. Robust Camera Discovery (The Fix)
+// 1. Camera & Media Logic
 // =================================================================
 
 async function getCameras() {
-    statusMessage.textContent = "Requesting camera access...";
-    cameraSelect.innerHTML = '<option>Loading...</option>';
-
     try {
-        // 1. Try standard access. 
-        // If this fails (e.g., Default Cam is busy), we catch the error.
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        
-        // If successful, stop this temporary stream immediately
-        stream.getTracks().forEach(t => t.stop());
-        
-        // Now we have permission to list labels
+        // Request permission first to see device labels
+        await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         enumerateAndSelect();
-
     } catch (err) {
-        console.warn("Default camera blocked/busy. Trying recovery...", err);
-        
-        // 2. RECOVERY MODE:
-        // If default is busy (Python has it), we try to find the Virtual Camera blindly.
-        try {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const videoDevices = devices.filter(d => d.kind === 'videoinput');
-            
-            // Try to find a specific Virtual Camera ID even without labels if possible,
-            // or just try opening the SECOND device (index 1) which is often the Virtual Cam.
-            if (videoDevices.length > 1) {
-                console.log("Attempting to bypass busy camera by selecting secondary device...");
-                startCameraStream(videoDevices[1].deviceId); // Try the next camera
-                
-                // Refresh list after a short delay to get labels
-                setTimeout(enumerateAndSelect, 1000);
-            } else {
-                throw new Error("No alternative camera found.");
-            }
-        } catch (recoveryErr) {
-            console.error("Recovery failed:", recoveryErr);
-            statusMessage.textContent = "⚠️ Camera Locked. Stop Python, Refresh Page, then Start Python.";
-            statusMessage.style.color = "orange";
-            
-            // Add a manual retry button for user
-            cameraSelect.innerHTML = '<option>⚠️ Camera Busy</option>';
-        }
+        console.warn("Access needed for enumeration", err);
+        cameraSelect.innerHTML = '<option>⚠️ Allow Camera Access</option>';
     }
 }
 
 async function enumerateAndSelect() {
-    try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(device => device.kind === 'videoinput');
-
-        cameraSelect.innerHTML = '<option value="" disabled>Select Camera Source</option>';
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoDevices = devices.filter(d => d.kind === 'videoinput');
+    
+    cameraSelect.innerHTML = '<option value="" disabled>Select Input</option>';
+    
+    let virtualId = null;
+    
+    videoDevices.forEach((d, index) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.text = d.label || `Camera ${index + 1}`;
         
-        let virtualCamId = null;
-
-        videoDevices.forEach(device => {
-            const option = document.createElement('option');
-            option.value = device.deviceId;
-            option.text = device.label || `Camera ${cameraSelect.length}`;
-            
-            // Smart Auto-Select Logic
-            const label = device.label.toLowerCase();
-            if (label.includes('virtual') || label.includes('obs') || label.includes('unity')) {
-                virtualCamId = device.deviceId;
-                option.selected = true;
-            }
-            
-            cameraSelect.appendChild(option);
-        });
-
-        // If we found a virtual camera, start it. Otherwise use the first one.
-        const targetId = virtualCamId || (videoDevices.length > 0 ? videoDevices[0].deviceId : null);
-        
-        if (targetId) {
-            startCameraStream(targetId);
+        // Auto-select Virtual Camera if found
+        if (d.label.includes('Virtual') || d.label.includes('OBS') || d.label.includes('Unity')) {
+            virtualId = d.deviceId;
+            opt.selected = true;
         }
-
-    } catch (e) {
-        console.error("Enumeration error:", e);
+        cameraSelect.appendChild(opt);
+    });
+    
+    // Start stream with Virtual Cam if found, else first available
+    if (virtualId || videoDevices.length > 0) {
+        startCameraStream(virtualId || videoDevices[0].deviceId);
     }
 }
 
 async function startCameraStream(deviceId) {
     if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
+        localStream.getTracks().forEach(t => t.stop());
     }
-
+    
     try {
-        const constraints = {
+        console.log("Starting stream with device:", deviceId);
+        const stream = await navigator.mediaDevices.getUserMedia({
             video: { 
-                deviceId: { exact: deviceId },
-                width: { ideal: 1280 },
-                height: { ideal: 720 }
+                deviceId: { exact: deviceId }, 
+                width: { ideal: 1280 }, 
+                height: { ideal: 720 } 
             },
-            audio: true 
-        };
-
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            audio: true
+        });
+        
         localStream = stream;
         localVideo.srcObject = stream;
-        statusMessage.textContent = "✅ System Ready. Waiting for call...";
+        statusMessage.textContent = "✅ Stream Active";
         statusMessage.style.color = "#4CAF50";
         
-    } catch (err) {
-        console.error("Stream error for ID " + deviceId, err);
-        statusMessage.textContent = "❌ Selected camera is busy or unavailable.";
+        // Reset UI state
+        isMicOn = true;
+        isCamOn = true;
+        updateButtonUI(toggleMicBtn, true, 'fa-microphone', 'fa-microphone-slash');
+        updateButtonUI(toggleCamBtn, true, 'fa-video', 'fa-video-slash');
+        
+    } catch (e) {
+        console.error("Camera Error:", e);
+        statusMessage.textContent = "❌ Camera Error (Check Console)";
+        statusMessage.style.color = "#f44336";
     }
 }
 
-// Listen for dropdown changes
-cameraSelect.onchange = () => {
-    startCameraStream(cameraSelect.value);
-};
+cameraSelect.onchange = () => startCameraStream(cameraSelect.value);
 
 // Initialize
 getCameras();
 
 // =================================================================
-// 2. Detection Alert Logic (Standard)
+// 2. Detection & Notification Logic ( The Fix )
 // =================================================================
 
 socket.on('new-detection', data => {
     const { objectId, className } = data;
-    detectionPopup.style.display = 'flex';
-    detectionPopup.innerHTML = `
-        <div class="popup-content">
-            <h3>🚨 New Detection</h3>
-            <p>A <strong>${className}</strong> was detected.</p>
-            <div class="button-group">
-                <button onclick="handleDetectionChoice(${objectId}, 'retain', '${className}')" style="background:#4CAF50">✅ Reveal</button>
-                <button onclick="handleDetectionChoice(${objectId}, 'blur', '${className}')" style="background:#ff9800">🔒 Keep Blurred</button>
-            </div>
+    
+    // Check local spam prevention
+    if (activeAlerts.has(className)) return;
+    activeAlerts.add(className);
+
+    console.log(`🚨 Popup for: ${className}`);
+
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.innerHTML = `
+        <div class="toast-content">
+            <h4>🔒 Privacy Alert</h4>
+            <p><strong>${className}</strong> detected & blurred</p>
+        </div>
+        <div class="toast-actions">
+            <button class="toast-btn btn-dismiss" onclick="dismissToast(this, '${className}')">Dismiss</button>
+            <button class="toast-btn btn-reveal" onclick="revealObject(this, ${objectId}, '${className}')">Reveal</button>
         </div>
     `;
+    toastContainer.appendChild(toast);
+    
+    // Auto dismiss
+    setTimeout(() => {
+        if (toast.parentElement) closeToast(toast, className);
+    }, 8000);
 });
 
-window.handleDetectionChoice = function(objectId, choice, className) {
-    socket.emit('detection-choice', { objectId, choice, className });
-    detectionPopup.style.display = 'none';
-    statusMessage.textContent = `Action: ${choice === 'retain' ? 'Revealed' : 'Blurred'} ${className}`;
-    setTimeout(() => statusMessage.textContent = "Secure call active", 3000);
+window.revealObject = function(btnElement, objectId, className) {
+    console.log(`Sending Reveal for Class: ${className}`);
+    
+    // Send specific command to backend
+    socket.emit('detection-choice', {
+        objectId: objectId,
+        choice: 'retain', 
+        className: className // This is what shared_state uses now
+    });
+
+    const toast = btnElement.closest('.toast');
+    toast.classList.add('success');
+    toast.innerHTML = `
+        <div class="toast-content">
+            <h4 style="color: #4CAF50">✅ Revealing...</h4>
+            <p>${className} visible</p>
+        </div>`;
+        
+    setTimeout(() => closeToast(toast, className), 1500);
+};
+window.dismissToast = function(btnElement, className) {
+    const toast = btnElement.closest('.toast');
+    closeToast(toast, className);
 };
 
+function closeToast(toast, className) {
+    // Animation
+    toast.style.animation = 'fadeOut 0.3s ease-in forwards';
+    
+    // Wait for animation, then remove
+    setTimeout(() => {
+        if (toast.parentElement) toast.remove();
+        // Allow this class to trigger alerts again later if it re-appears
+        // (Optional: Remove this line if you want to mute alerts for this class forever)
+        activeAlerts.delete(className); 
+    }, 300);
+}
+
 // =================================================================
-// 3. WebRTC Call Logic (Standard)
+// 3. Media Controls (Mic/Cam)
+// =================================================================
+
+window.toggleMic = function() {
+    if (localStream) {
+        const audioTrack = localStream.getAudioTracks()[0];
+        if (audioTrack) {
+            isMicOn = !isMicOn;
+            audioTrack.enabled = isMicOn;
+            updateButtonUI(toggleMicBtn, isMicOn, 'fa-microphone', 'fa-microphone-slash');
+        }
+    }
+};
+
+window.toggleCam = function() {
+    if (localStream) {
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (videoTrack) {
+            isCamOn = !isCamOn;
+            videoTrack.enabled = isCamOn;
+            updateButtonUI(toggleCamBtn, isCamOn, 'fa-video', 'fa-video-slash');
+        }
+    }
+};
+
+function updateButtonUI(btn, isActive, iconActive, iconInactive) {
+    const icon = btn.querySelector('i');
+    if (isActive) {
+        btn.style.backgroundColor = '#444';
+        btn.style.color = '#fff';
+        if(icon) icon.className = `fas ${iconActive}`;
+    } else {
+        btn.style.backgroundColor = '#f44336'; // Red
+        btn.style.color = '#fff';
+        if(icon) icon.className = `fas ${iconInactive}`;
+    }
+}
+
+// =================================================================
+// 4. WebRTC Logic (Standard)
 // =================================================================
 
 function createPeerConnection() {
@@ -177,7 +234,9 @@ function createPeerConnection() {
     };
 
     peer.onicecandidate = event => {
-        if (event.candidate) socket.emit('ice-candidate', event.candidate);
+        if (event.candidate) {
+            socket.emit('ice-candidate', event.candidate);
+        }
     };
 
     if (localStream) {
@@ -186,9 +245,11 @@ function createPeerConnection() {
 }
 
 startCallBtn.onclick = async () => {
-    if (!localStream) return alert("Please wait for camera connection.");
+    if (!localStream) return alert("Camera not ready");
+    
     statusMessage.textContent = "⏳ Calling...";
     createPeerConnection();
+    
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
     socket.emit('offer', offer);
@@ -200,7 +261,7 @@ socket.on('offer', async offer => {
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
     socket.emit('answer', answer);
-    statusMessage.textContent = "⏳ Answering...";
+    statusMessage.textContent = "⏳ Connecting...";
 });
 
 socket.on('answer', async answer => {

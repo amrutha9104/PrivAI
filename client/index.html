@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <title>PrivAI: Secure Video Call</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
     <div class="app-container">
@@ -24,21 +25,32 @@
         </div>
 
         <div class="controls-panel">
-            <div class="select-container" style="margin-bottom: 15px;">
-                <label for="cameraSelect" style="color: #aaa; margin-right: 10px;">Select Input:</label>
-                <select id="cameraSelect" style="padding: 8px; border-radius: 5px; background: #333; color: white; border: 1px solid #555;">
+            <div class="select-container">
+                <select id="cameraSelect" class="device-select">
                     <option value="" disabled selected>Loading cameras...</option>
                 </select>
             </div>
 
-            <button id="startCall" class="call-button">Start Secure Call 📞</button>
+            <div class="media-controls">
+                <button id="toggleMicBtn" class="control-btn" onclick="toggleMic()">
+                    <i class="fas fa-microphone"></i>
+                </button>
+                <button id="toggleCamBtn" class="control-btn" onclick="toggleCam()">
+                    <i class="fas fa-video"></i>
+                </button>
+                <button id="startCall" class="call-button">
+                    Start Call 📞
+                </button>
+            </div>
+
             <div id="statusMessage" class="status-message">Select your Virtual Camera to begin...</div>
         </div>
     </div>
 
-    <div id="detectionPopup" class="detection-popup"></div>
+    <div id="toast-container" class="toast-container"></div>
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="script.js"></script>
+    
 </body>
 </html>

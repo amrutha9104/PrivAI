@@ -3,30 +3,34 @@ import cv2
 from threading import Thread
 
 class WebcamStream:
-    """
-    Dedicated thread for reading frames from cv2.VideoCapture to overcome 
-    OpenCV's sequential read/process bottleneck and reduce latency.
-    """
     def __init__(self, src=0):
-        # Use DSHOW backend for better resource sharing on Windows
-        self.stream = cv2.VideoCapture(src, cv2.CAP_DSHOW) 
+        # Try to force high resolution, but fall back if needed
+        self.stream = cv2.VideoCapture(src, cv2.CAP_DSHOW)
+        
+        # Set resolution to match what we expect (1280x720)
+        self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
         if not self.stream.isOpened():
-            print("Error: Could not open webcam source.")
+            print(f"❌ Error: Could not open webcam source {src}.")
             self.stopped = True
             return
 
         (self.grabbed, self.frame) = self.stream.read()
-        self.stopped = False
+        
+        if not self.grabbed:
+            print(f"⚠️ Warning: Camera {src} opened but returned empty frame.")
+            self.stopped = True
+        else:
+            self.stopped = False
+            
         self.t = Thread(target=self.update, args=(), daemon=True)
 
     def start(self):
-        """Starts the thread to read frames from the video stream."""
         self.t.start()
         return self
 
     def update(self):
-        """Continuously reads frames in a loop until the thread is stopped."""
         while True:
             if self.stopped:
                 break
@@ -36,11 +40,10 @@ class WebcamStream:
                 break
 
     def read(self):
-        """Returns the frame most recently read."""
         return self.frame
 
     def stop(self):
-        """Indicates that the thread should be stopped."""
         self.stopped = True
-        self.t.join()
+        if self.t.is_alive():
+            self.t.join()
         self.stream.release()
